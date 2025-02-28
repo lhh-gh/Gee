@@ -3,11 +3,13 @@ package gee
 import (
 	"log"
 	"net/http"
+	"strings"
 )
 
-// HandlerFunc defines the request handler used by gee
+// HandlerFunc 定义请求处理函数类型，接收上下文对象
 type HandlerFunc func(*Context)
 
+// RouterGroup 路由组结构，支持路由分组和中间件
 type RouterGroup struct {
 	prefix      string
 	middlewares []HandlerFunc // support middleware
@@ -15,14 +17,14 @@ type RouterGroup struct {
 	engine      *Engine       // all groups share a Engine instance
 }
 
-// Engine implement the interface of ServeHTTP
+// Engine 核心结构，实现http.Handler接口
 type Engine struct {
 	*RouterGroup
 	router *router
 	groups []*RouterGroup
 }
 
-// New is the constructor of gee.Engine
+// New 创建并初始化引擎实例
 func New() *Engine {
 	engine := &Engine{router: newRouter()}
 	engine.RouterGroup = &RouterGroup{engine: engine}
@@ -30,8 +32,7 @@ func New() *Engine {
 	return engine
 }
 
-// Group is defined to create a new RouterGroup
-// remember all groups share the same Engine instance
+// Group 创建子路由组（支持路由分组嵌套）
 func (group *RouterGroup) Group(prefix string) *RouterGroup {
 	engine := group.engine
 	newGroup := &RouterGroup{
@@ -43,28 +44,46 @@ func (group *RouterGroup) Group(prefix string) *RouterGroup {
 	return newGroup
 }
 
+// addRoute 注册路由到路由树
 func (group *RouterGroup) addRoute(method string, comp string, handler HandlerFunc) {
 	pattern := group.prefix + comp
 	log.Printf("Route %4s - %s", method, pattern)
 	group.engine.router.addRoute(method, pattern, handler)
 }
 
-// GET defines the method to add GET request
+// GET 注册GET方法路由
 func (group *RouterGroup) GET(pattern string, handler HandlerFunc) {
 	group.addRoute("GET", pattern, handler)
 }
 
-// POST defines the method to add POST request
+// POST 注册POST方法路由（
 func (group *RouterGroup) POST(pattern string, handler HandlerFunc) {
 	group.addRoute("POST", pattern, handler)
 }
 
-// Run defines the method to start a http server
+// Use 为路由组添加中间件
+// authGroup.Use(JWTAuth(), Logging())
+
 func (engine *Engine) Run(addr string) (err error) {
 	return http.ListenAndServe(addr, engine)
 }
 
+// Use is defined to add middleware to the group
+func (group *RouterGroup) Use(middlewares ...HandlerFunc) {
+	group.middlewares = append(group.middlewares, middlewares...)
+}
+
+// ServeHTTP 实现http.Handler接口（核心请求处理方法）
 func (engine *Engine) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	// 收集匹配请求路径的所有中间件
+	var middlewares []HandlerFunc
+	for _, group := range engine.groups {
+		if strings.HasPrefix(req.URL.Path, group.prefix) {
+			middlewares = append(middlewares, group.middlewares...)
+		}
+	}
+	// 创建请求上下文对象
 	c := newContext(w, req)
-	engine.router.handle(c)
+	c.handlers = middlewares // 注入中间件链
+	engine.router.handle(c)  // 执行路由处理
 }
